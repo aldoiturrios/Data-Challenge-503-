@@ -1,0 +1,214 @@
+---
+title: 'Data Challenge: AdaBoost Model Fitting'
+author: "Aldo Iturrios"
+date: "3/28/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+library(stringr)
+library(ROCR)
+library(Metrics)
+library(randomForest)
+library(gbm)
+library(e1071)
+```
+
+# Training Data
+
+```{r}
+# Data
+train_data.sumvars <- read.csv("../Data/clean_data/train_data_sumvars.csv")
+test_data.sumvars <- read.csv("../Data/clean_data/test_data_sumvars.csv")
+test_outcomes <- read.csv("../Data/outcomes/test_nolabel.csv")
+
+# Remove Mean, Min, and Max Summary Variables (Not Important to Model)
+var_remove <- grep("_mean", colnames(train_data.sumvars))
+train_data.sumvars <- train_data.sumvars[, -var_remove]
+var_remove <- grep("_min", colnames(train_data.sumvars))
+train_data.sumvars <- train_data.sumvars[, -var_remove]
+var_remove <- grep("_max", colnames(train_data.sumvars))
+train_data.sumvars <- train_data.sumvars[, -var_remove]
+```
+
+# Training Validation Split (70% vs. 30%)
+
+```{r}
+set.seed(08212021)
+n = dim(train_data.sumvars)[1]
+train_id = sample(seq(1, n, 1), floor(n*0.7))
+
+# Validation Training Set (70%)
+val.train = train_data.sumvars[train_id, ]
+
+# Validation Test Set (30%)
+val.test = train_data.sumvars[-train_id, ]
+```
+
+# Paramater Tuning
+
+```{r}
+# Hyperparameter grid
+hyper_grid <- expand.grid(
+  cutoff = c(0.6, 0.65, 0.7),
+  n.trees = c(500, 1000),
+  shrinkage = c(.01, 0.05),
+  interaction.depth = c(3, 4, 5)
+)
+
+# Total number of combinations
+nrow(hyper_grid)
+```
+
+### Function that does crossvalidation on all combinations of paramaters (listed above)
+
+```{r}
+Kfold_CV_adaboost <- function(K, param_grid, param_combo, train) {
+  
+  fold_size = floor(nrow(train)/K)
+  
+  cv_error = rep(0,K)
+  auc_score = rep(0,K)
+  
+  for(i in 1:K) {
+    
+    # iteratively select K-1 folds as training data in CV procedure, remaining as test data.
+    if(i!=K){
+      CV_test_id = ((i-1)*fold_size+1):(i*fold_size)
+    }else{
+      CV_test_id = ((i-1)*fold_size+1):nrow(train)
+    }
+    
+    CV_train = train[-CV_test_id,]
+    CV_test = train[CV_test_id,]
+    
+    # Fit logistic regression model
+    ada_model <- gbm(outcome ~., 
+                     data = CV_train, 
+                     distribution = "adaboost", 
+                     n.trees = param_grid$n.trees[param_combo], 
+                     interaction.depth = param_grid$interaction.depth[param_combo], 
+                     shrinkage = param_grid$shrinkage[param_combo])
+    
+    # Predict
+    pred = predict(ada_model, newdata = CV_test, n.trees = param_grid$n.trees[param_combo], type = "response")
+    
+    # Predicted classifications
+    ada_pred <- ifelse(pred > param_grid$cutoff[param_combo], 1, 0)
+    pos_error <- mean(ada_pred[which(CV_test$outcome == 1)] != CV_test[CV_test$outcome == 1,]$outcome)
+    neg_error <- mean(ada_pred[which(CV_test$outcome == 0)] != CV_test[CV_test$outcome == 0, ]$outcome)
+    
+    # Calculate CV error by taking averages
+    cv_error[i] = (pos_error + neg_error) / 2
+
+    # AUC Score
+    pr <- prediction(pred, CV_test$outcome)
+    auc = performance(pr, "auc")
+    auc_score[i] <- as.numeric(auc@y.values)
+    
+  }
+  return(c(mean(cv_error), min(cv_error), max(cv_error), mean(auc_score)))
+}
+```
+
+Here, we do 3-Fold CV to tune hyper paramaters:
+
+```{r, warning=FALSE}
+set.seed(07122021)
+K_fold = 3
+berr_list = rep(0, nrow(hyper_grid))
+berr_min_list = rep(0, nrow(hyper_grid))
+berr_max_list = rep(0, nrow(hyper_grid))
+auc_list = rep(0, nrow(hyper_grid))
+for(row_i in 1:nrow(hyper_grid)){
+  result = Kfold_CV_adaboost(K = K_fold, param_grid = hyper_grid, param_combo = row_i, train = val.train[, -c(1, 5)])
+  berr_list[row_i] = result[1]
+  berr_min_list[row_i] = result[2]
+  berr_max_list[row_i] = result[3]
+  auc_list[row_i] = result[4]
+}
+```
+
+
+```{r}
+hyper_grid$berr <- berr_list
+hyper_grid$berr_min <-berr_min_list
+hyper_grid$berr_max <-berr_max_list
+hyper_grid$auc <- auc_list
+hyper_grid[order(hyper_grid$berr), ]
+```
+
+### The Best Model
+
+```{r}
+# Model with Lowest BER
+hyper_grid[which.min(hyper_grid$berr), ]
+
+#Model with Highest AUC
+hyper_grid[which.max(hyper_grid$auc), ]
+```
+
+
+## Validating "best" model using validation test set
+
+```{r}
+set.seed(08012021)
+
+# Get best values (based on lowest BERR score)
+best_cutoff = hyper_grid[which.min(hyper_grid$berr), ]$cutoff
+best_n.tress = hyper_grid[which.min(hyper_grid$berr), ]$n.trees
+best_interaction.depth = hyper_grid[which.min(hyper_grid$berr), ]$interaction.depth
+best_shrinkage = hyper_grid[which.min(hyper_grid$berr), ]$shrinkage
+
+# Fit model on entire training set
+ada_best = gbm(outcome ~., data = val.train[, -c(1, 5)], distribution = "adaboost", n.trees = best_n.tress, interaction.depth = best_interaction.depth, shrinkage = best_shrinkage)
+summary(ada_best)
+```
+
+```{r}
+#Make predictions using validation test set
+ada_pred_response = predict(ada_best, newdata = val.test[, -c(1, 5)], n.trees = best_n.tress, type = "response")
+ada_pred = ifelse(ada_pred_response > best_cutoff, 1, 0)
+pos_error <- mean(ada_pred[which(val.test$outcome == 1)] != val.test[val.test$outcome == 1,]$outcome)
+neg_error <- mean(ada_pred[which(val.test$outcome == 0)] != val.test[val.test$outcome == 0, ]$outcome)
+    
+# Calculate balanced error rate
+berr_error = (pos_error + neg_error) / 2
+sprintf("Balanced Error Rate based on Validation Test Set: %f", berr_error)
+
+# Calculate AUC score
+pr <- prediction(ada_pred_response, val.test$outcome)
+auc = performance(pr, "auc")
+sprintf("AUC score based on Validation Test Set: %f", as.numeric(auc@y.values))
+```
+
+# Final Predictions
+
+```{r}
+# Re-Fit model on entire training set
+final_ada_model = gbm(outcome ~., data = train_data.sumvars[, -c(1, 5)], distribution = "adaboost", n.trees = best_n.tress, interaction.depth = best_interaction.depth, shrinkage = best_shrinkage)
+summary(final_ada_model)
+```
+
+```{r}
+#Make predictions using Test Set
+final_ada_prob = predict(final_ada_model, newdata = test_data.sumvars[, -c(1, 5)], n.trees = best_n.tress, type = "response")
+final_ada_pred = ifelse(final_ada_prob > best_cutoff, 1, 0)
+    
+# Store Results
+test_outcomes$score <- final_ada_prob
+test_outcomes$outcome <- final_ada_pred
+head(test_outcomes)
+```
+
+## Save Results
+
+```{r}
+write.csv(test_outcomes,"../Final Model and Predictions/test_nolabel.csv", row.names = FALSE)
+```
+

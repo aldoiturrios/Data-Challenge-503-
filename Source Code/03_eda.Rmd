@@ -1,0 +1,124 @@
+---
+title: 'Data Challenge: Exploratory Data Analysis'
+author: "Aldo Iturrios"
+date: "3/27/2021"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(stringr)
+```
+
+```{r, include = FALSE}
+# Data
+clean_data <- read.csv("../Data/clean_data/clean_data.csv")
+train_data <- read.csv("../Data/clean_data/train_data.csv")
+test_data <- read.csv("../Data/clean_data/test_data.csv")
+```
+
+```{r, include = FALSE}
+time_var_subset <- grep(paste("[0-9]{2}.[0-9]{2}_.", sep=""), colnames(clean_data))
+time_data <- clean_data[,time_var_subset]
+var_names <- unique(names(time_data[ ,6:ncol(time_data)]))
+timestamps <- c(unique(str_extract(var_names, "[0-9]{2}.[0-9]{2}")))
+measures <- unique(str_extract(var_names, "(?<=_)[a-zA-Z]+[0-9]*"))
+```
+
+
+## NA's in the Data
+
+### Question: What percentage of patients have at least one record for a particular variable (ie. 60% of patients have at least 1 blood pressure reading)
+
+```{r, include = FALSE}
+nas_vec <- c()
+for (i in 1:length(measures)) {
+  if (measures[i] == "SAPS") { 
+    nas_vec[i] <- sum(is.na(clean_data[,grep(measures[i], colnames(clean_data))]) > 0) / nrow(clean_data)
+  }
+  else {
+    nas_vec_var <- rowSums(is.na(clean_data[,grep(measures[i], colnames(clean_data))]))
+    nas_vec[i] <- sum((ncol(clean_data[,grep(measures[i], colnames(clean_data))]) - nas_vec_var) > 0) / nrow(clean_data)
+  }
+}
+```
+
+
+```{r, echo=FALSE}
+data.frame(measures, patients_atleast_one = round(nas_vec * 100, 2))
+```
+
+### Question: Distribution of patient data at each time point (ie. 98% of patients have data at 00:30, 80% of patients have data at 06:30, etc…)
+
+```{r, include = FALSE}
+times_vec <- c()
+for (i in 1:length(timestamps)) {
+  times_vec_var <- rowSums(is.na(clean_data[,grep(timestamps[i], colnames(clean_data))]))
+    times_vec[i] <- sum((ncol(clean_data[,grep(timestamps[i], colnames(clean_data))]) - times_vec_var) > 0) / nrow(clean_data)
+}
+```
+
+```{r}
+data.frame(timestamps, patients_atleast_one = round(times_vec * 100, 2))
+```
+
+# EDA on Training Data (Looking at variables in relation to Outcome)
+
+### Outcome:
+
+```{r}
+# Training Data
+table(train_data$outcome)
+```
+
+### Recovery by Admission Type
+
+```{r}
+counts <- table(train_data$outcome, train_data$AdmissionType)
+barplot(counts, main="Recovery by Admission Type", xlab="Admission Type", ylab = "Number of Patients", col=c("darkblue","red"), legend = rownames(counts), beside=TRUE)
+addmargins(counts)
+```
+
+### Recovery by Gender
+
+```{r}
+gender_counts <- table(train_data$outcome, train_data$Gender)
+barplot(gender_counts, main="Recovery by Gender", xlab="Gender", ylab = "Number of Patients", col=c("darkblue","red"), legend = rownames(gender_counts), beside=TRUE)
+addmargins(gender_counts)
+```
+
+```{r}
+summary(train_data$Age)
+```
+
+```{r}
+boxplot(train_data$Age ~ train_data$outcome)
+```
+
+# Look at a few measure summary variables
+
+```{r, fig.show="hold", out.height = "50%", out.width="50%", echo=FALSE}
+hist(train_data$ALP_mean)
+hist(train_data$ALP_median)
+```
+
+```{r, fig.show="hold", out.height = "50%", out.width="50%", echo=FALSE}
+hist(train_data$Glucose_mean)
+hist(train_data$Glucose_median)
+```
+
+```{r, fig.show="hold", out.height = "50%", out.width="50%", echo=FALSE}
+hist(train_data$Cholesterol_mean)
+hist(train_data$Cholesterol_median)
+```
+
+```{r, fig.show="hold", out.height = "50%", out.width="50%", echo=FALSE}
+hist(train_data$Urine_mean)
+hist(train_data$Urine_median)
+```
+
+
